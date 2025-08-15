@@ -5,6 +5,7 @@ entrypoint = "index.html"
 
 [nix]
 channel = "stable-24_05"
+packages = ["gh"]
 
 [unitTest]
 language = "nodejs"
@@ -17,3 +18,7 @@ publicDir = "dist"
 [[ports]]
 localPort = 5173
 externalPort = 80
+
+[[ports]]
+localPort = 5174
+externalPort = 3000

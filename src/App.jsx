@@ -1,9 +1,10 @@
 import './App.css'
+import Chess from './Chess'
 
 export default function App() {
   return (
-    <main>
-      React ⚛️ + Vite ⚡ + Replit
-    </main>
+    <div className="App">
+      <Chess />
+    </div>
   )
 }
