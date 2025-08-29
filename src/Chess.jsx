@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import './Chess.css';
+import { initialBoard, initialColors, getPossibleMoves, checkGameStatus as getGameStatus } from './chess-logic';
 
 // Custom SVG Chess Pieces
 const PIECES = {
@@ -239,30 +240,6 @@ const PIECES = {
   }
 };
 
-// Initial chess board setup
-const initialBoard = [
-  ['rook', 'knight', 'bishop', 'queen', 'king', 'bishop', 'knight', 'rook'],
-  ['pawn', 'pawn', 'pawn', 'pawn', 'pawn', 'pawn', 'pawn', 'pawn'],
-  [null, null, null, null, null, null, null, null],
-  [null, null, null, null, null, null, null, null],
-  [null, null, null, null, null, null, null, null],
-  [null, null, null, null, null, null, null, null],
-  ['pawn', 'pawn', 'pawn', 'pawn', 'pawn', 'pawn', 'pawn', 'pawn'],
-  ['rook', 'knight', 'bishop', 'queen', 'king', 'bishop', 'knight', 'rook']
-];
-
-// Initial colors for pieces
-const initialColors = [
-  ['black', 'black', 'black', 'black', 'black', 'black', 'black', 'black'],
-  ['black', 'black', 'black', 'black', 'black', 'black', 'black', 'black'],
-  [null, null, null, null, null, null, null, null],
-  [null, null, null, null, null, null, null, null],
-  [null, null, null, null, null, null, null, null],
-  [null, null, null, null, null, null, null, null],
-  ['white', 'white', 'white', 'white', 'white', 'white', 'white', 'white'],
-  ['white', 'white', 'white', 'white', 'white', 'white', 'white', 'white']
-];
-
 const Chess = () => {
   const [board, setBoard] = useState(initialBoard);
   const [pieceColors, setPieceColors] = useState(initialColors);
@@ -276,6 +253,41 @@ const Chess = () => {
   const [enPassantTarget, setEnPassantTarget] = useState(null); // {row, col} of square where en passant capture can happen
   const [touchStartPos, setTouchStartPos] = useState(null);
   const [isMobile, setIsMobile] = useState(false);
+  const [aiDifficulty, setAiDifficulty] = useState('human');
+  const [worker, setWorker] = useState(null);
+
+  useEffect(() => {
+    const newWorker = new Worker(new URL('./ai-worker.js', import.meta.url), { type: 'module' });
+    setWorker(newWorker);
+
+    return () => {
+      newWorker.terminate();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (worker) {
+      worker.onmessage = (e) => {
+        const bestMove = e.data;
+        if (bestMove) {
+          makeMove(bestMove.from.row, bestMove.from.col, bestMove.to.row, bestMove.to.col, bestMove.to.isEnPassant);
+        }
+      };
+    }
+  }, [worker]);
+
+  useEffect(() => {
+    if (aiDifficulty !== 'human' && currentPlayer === 'black') {
+      worker.postMessage({
+        board,
+        pieceColors,
+        currentPlayer,
+        difficulty: aiDifficulty,
+        enPassantTarget,
+      });
+    }
+  }, [currentPlayer, aiDifficulty, board, pieceColors, enPassantTarget, worker]);
+
 
   // Detect mobile device
   useEffect(() => {
@@ -338,10 +350,10 @@ const Chess = () => {
             // First select the piece we started dragging from
             if (board[touchStartPos.row][touchStartPos.col] && pieceColors[touchStartPos.row][touchStartPos.col] === currentPlayer) {
               setSelectedSquare({ row: touchStartPos.row, col: touchStartPos.col });
-              setValidMoves(getPossibleMoves(touchStartPos.row, touchStartPos.col));
+              setValidMoves(getPossibleMoves(touchStartPos.row, touchStartPos.col, board, pieceColors, true, enPassantTarget));
               
               // Then try to move to the target if it's a valid move
-              const moves = getPossibleMoves(touchStartPos.row, touchStartPos.col);
+              const moves = getPossibleMoves(touchStartPos.row, touchStartPos.col, board, pieceColors, true, enPassantTarget);
               const targetMove = moves.find(move => move.row === targetRow && move.col === targetCol);
               if (targetMove) {
                 makeMove(touchStartPos.row, touchStartPos.col, targetRow, targetCol, targetMove.isEnPassant);
@@ -356,230 +368,10 @@ const Chess = () => {
     e.preventDefault();
   };
 
-  // Check if a square is under attack by the opponent
-  const isSquareUnderAttack = useCallback((row, col, color, testBoard = board, testColors = pieceColors) => {
-    const opponentColor = color === 'white' ? 'black' : 'white';
-    
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 8; c++) {
-        if (testColors[r][c] === opponentColor && testBoard[r][c]) {
-          const moves = getPossibleMoves(r, c, testBoard, testColors, false);
-          if (moves.some(move => move.row === row && move.col === col)) {
-            return true;
-          }
-        }
-      }
-    }
-    return false;
-  }, [board, pieceColors]);
-
-  // Get possible moves for a piece
-  const getPossibleMoves = useCallback((row, col, testBoard = board, testColors = pieceColors, checkForCheck = true) => {
-    const piece = testBoard[row][col];
-    const color = testColors[row][col];
-    if (!piece || !color) return [];
-
-    let moves = [];
-
-    switch (piece) {
-      case 'pawn':
-        const direction = color === 'white' ? -1 : 1;
-        const startRow = color === 'white' ? 6 : 1;
-        
-        // Move forward one square
-        if (row + direction >= 0 && row + direction < 8 && !testBoard[row + direction][col]) {
-          moves.push({ row: row + direction, col });
-          
-          // Move forward two squares from starting position
-          if (row === startRow && !testBoard[row + 2 * direction][col]) {
-            moves.push({ row: row + 2 * direction, col });
-          }
-        }
-        
-        // Capture diagonally
-        for (const dc of [-1, 1]) {
-          const newRow = row + direction;
-          const newCol = col + dc;
-          if (newRow >= 0 && newRow < 8 && newCol >= 0 && newCol < 8) {
-            if (testBoard[newRow][newCol] && testColors[newRow][newCol] !== color) {
-              moves.push({ row: newRow, col: newCol });
-            }
-            // En passant capture
-            else if (enPassantTarget && 
-                     enPassantTarget.row === newRow && 
-                     enPassantTarget.col === newCol) {
-              moves.push({ row: newRow, col: newCol, isEnPassant: true });
-            }
-          }
-        }
-        break;
-
-      case 'rook':
-        const rookDirections = [[0, 1], [0, -1], [1, 0], [-1, 0]];
-        for (const [dr, dc] of rookDirections) {
-          for (let i = 1; i < 8; i++) {
-            const newRow = row + dr * i;
-            const newCol = col + dc * i;
-            if (newRow < 0 || newRow >= 8 || newCol < 0 || newCol >= 8) break;
-            
-            if (!testBoard[newRow][newCol]) {
-              moves.push({ row: newRow, col: newCol });
-            } else {
-              if (testColors[newRow][newCol] !== color) {
-                moves.push({ row: newRow, col: newCol });
-              }
-              break;
-            }
-          }
-        }
-        break;
-
-      case 'bishop':
-        const bishopDirections = [[1, 1], [1, -1], [-1, 1], [-1, -1]];
-        for (const [dr, dc] of bishopDirections) {
-          for (let i = 1; i < 8; i++) {
-            const newRow = row + dr * i;
-            const newCol = col + dc * i;
-            if (newRow < 0 || newRow >= 8 || newCol < 0 || newCol >= 8) break;
-            
-            if (!testBoard[newRow][newCol]) {
-              moves.push({ row: newRow, col: newCol });
-            } else {
-              if (testColors[newRow][newCol] !== color) {
-                moves.push({ row: newRow, col: newCol });
-              }
-              break;
-            }
-          }
-        }
-        break;
-
-      case 'queen':
-        const queenDirections = [[0, 1], [0, -1], [1, 0], [-1, 0], [1, 1], [1, -1], [-1, 1], [-1, -1]];
-        for (const [dr, dc] of queenDirections) {
-          for (let i = 1; i < 8; i++) {
-            const newRow = row + dr * i;
-            const newCol = col + dc * i;
-            if (newRow < 0 || newRow >= 8 || newCol < 0 || newCol >= 8) break;
-            
-            if (!testBoard[newRow][newCol]) {
-              moves.push({ row: newRow, col: newCol });
-            } else {
-              if (testColors[newRow][newCol] !== color) {
-                moves.push({ row: newRow, col: newCol });
-              }
-              break;
-            }
-          }
-        }
-        break;
-
-      case 'king':
-        const kingMoves = [[0, 1], [0, -1], [1, 0], [-1, 0], [1, 1], [1, -1], [-1, 1], [-1, -1]];
-        for (const [dr, dc] of kingMoves) {
-          const newRow = row + dr;
-          const newCol = col + dc;
-          if (newRow >= 0 && newRow < 8 && newCol >= 0 && newCol < 8) {
-            if (!testBoard[newRow][newCol] || testColors[newRow][newCol] !== color) {
-              moves.push({ row: newRow, col: newCol });
-            }
-          }
-        }
-        break;
-
-      case 'knight':
-        const knightMoves = [[2, 1], [2, -1], [-2, 1], [-2, -1], [1, 2], [1, -2], [-1, 2], [-1, -2]];
-        for (const [dr, dc] of knightMoves) {
-          const newRow = row + dr;
-          const newCol = col + dc;
-          if (newRow >= 0 && newRow < 8 && newCol >= 0 && newCol < 8) {
-            if (!testBoard[newRow][newCol] || testColors[newRow][newCol] !== color) {
-              moves.push({ row: newRow, col: newCol });
-            }
-          }
-        }
-        break;
-    }
-
-    // Filter moves that would put own king in check
-    if (checkForCheck) {
-      moves = moves.filter(move => {
-        const newBoard = testBoard.map(row => [...row]);
-        const newColors = testColors.map(row => [...row]);
-        
-        // Make the move
-        newBoard[move.row][move.col] = newBoard[row][col];
-        newColors[move.row][move.col] = newColors[row][col];
-        newBoard[row][col] = null;
-        newColors[row][col] = null;
-        
-        // Find king position
-        let kingRow, kingCol;
-        for (let r = 0; r < 8; r++) {
-          for (let c = 0; c < 8; c++) {
-            if (newBoard[r][c] === 'king' && newColors[r][c] === color) {
-              kingRow = r;
-              kingCol = c;
-              break;
-            }
-          }
-        }
-        
-        return !isSquareUnderAttack(kingRow, kingCol, color, newBoard, newColors);
-      });
-    }
-
-    return moves;
-  }, [board, pieceColors, isSquareUnderAttack, enPassantTarget]);
-
-  // Check if the current player is in check
-  const isInCheck = useCallback((color) => {
-    let kingRow, kingCol;
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 8; c++) {
-        if (board[r][c] === 'king' && pieceColors[r][c] === color) {
-          kingRow = r;
-          kingCol = c;
-          break;
-        }
-      }
-    }
-    return isSquareUnderAttack(kingRow, kingCol, color);
-  }, [board, pieceColors, isSquareUnderAttack]);
-
-  // Check for checkmate or stalemate
-  const checkGameStatus = useCallback(() => {
-    const hasValidMoves = () => {
-      for (let r = 0; r < 8; r++) {
-        for (let c = 0; c < 8; c++) {
-          if (pieceColors[r][c] === currentPlayer && board[r][c]) {
-            const moves = getPossibleMoves(r, c);
-            if (moves.length > 0) return true;
-          }
-        }
-      }
-      return false;
-    };
-
-    const inCheck = isInCheck(currentPlayer);
-    const hasValidMovesLeft = hasValidMoves();
-
-    if (!hasValidMovesLeft) {
-      if (inCheck) {
-        setGameStatus(`checkmate-${currentPlayer === 'white' ? 'black' : 'white'}`);
-      } else {
-        setGameStatus('stalemate');
-      }
-    } else if (inCheck) {
-      setGameStatus(`check-${currentPlayer}`);
-    } else {
-      setGameStatus('active');
-    }
-  }, [currentPlayer, board, pieceColors, isInCheck, getPossibleMoves]);
-
   useEffect(() => {
-    checkGameStatus();
-  }, [checkGameStatus]);
+    const status = getGameStatus(currentPlayer, board, pieceColors, enPassantTarget);
+    setGameStatus(status);
+  }, [currentPlayer, board, pieceColors, enPassantTarget]);
 
   const handleSquareClick = (row, col) => {
     if (gameStatus.startsWith('checkmate') || gameStatus === 'stalemate') return;
@@ -762,6 +554,19 @@ const Chess = () => {
           <button className="reset-button" onClick={resetGame}>
             New Game
           </button>
+          <div className="ai-difficulty-selector">
+            <label htmlFor="ai-difficulty">AI Difficulty:</label>
+            <select
+              id="ai-difficulty"
+              value={aiDifficulty}
+              onChange={(e) => setAiDifficulty(e.target.value)}
+            >
+              <option value="human">Human</option>
+              <option value="easy">Easy</option>
+              <option value="medium">Medium</option>
+              <option value="hard">Hard</option>
+            </select>
+          </div>
         </div>
       </div>
       
